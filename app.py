@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify
 from pymesomb.operations import PaymentOperation
 from pymesomb.utils import RandomGenerator
-from datetime import datetime
+from datetime import datetime, date
 from dotenv import load_dotenv
+from decimal import Decimal
 import os
 
 # Charger les variables d'environnement depuis le fichier .env
@@ -35,11 +36,23 @@ COUNTRY_CONFIG = {
     },
 }
 
+# Fonction utilitaire pour la sérialisation JSON
+def serialize(obj):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    elif hasattr(obj, "__dict__"):
+        return {k: serialize(v) for k, v in vars(obj).items()}
+    elif isinstance(obj, list):
+        return [serialize(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: serialize(v) for k, v in obj.items()}
+    else:
+        return str(obj)
+
 @app.route("/api/payment-options", methods=["POST"])
 def payment_options():
-    """
-    Retourne les options de paiement disponibles pour un pays donné.
-    """
     try:
         data = request.get_json()
         country_code = data.get("country_code")
@@ -59,37 +72,28 @@ def payment_options():
 
 @app.route("/api/pay", methods=["POST"])
 def pay():
-    """
-    Effectue un paiement en utilisant la bibliothèque PyMeSomb.
-    """
     try:
         data = request.get_json()
         print("Données reçues :", data)
 
-        # Extraire les paramètres nécessaires
         method = data.get("method")
         amount = data.get("amount")
         phone = data.get("phone")
         country_code = data.get("country_code")
         trx_id = data.get("trx_id", RandomGenerator.nonce())
 
-        # Vérifier que tous les paramètres sont disponibles
         if not all([method, amount, phone, country_code]):
             return jsonify({"error": "Paramètres manquants"}), 400
 
-        # Vérifier si le pays est supporté
         config = COUNTRY_CONFIG.get(country_code.upper())
         if not config:
             return jsonify({"error": "Pays non supporté"}), 400
 
-        # Vérifier si la méthode de paiement est valide
         if method.upper() not in config["payment_methods"]:
             return jsonify({"error": f"Méthode de paiement '{method}' non disponible pour {country_code.upper()}"}), 400
 
-        # Formater le numéro de téléphone
         formatted_phone = config["phone_format"](phone)
 
-        # Préparer les données pour la collecte
         collect_data = {
             "amount": amount,
             "service": method.upper(),
@@ -100,7 +104,6 @@ def pay():
 
         print("Données de collecte :", collect_data)
 
-        # Effectuer la collecte via l'API MeSomb
         response = operation.make_collect(
             amount=collect_data["amount"],
             service=collect_data["service"],
@@ -109,42 +112,27 @@ def pay():
             trx_id=collect_data["trx_id"]
         )
 
-        # Vérifier le succès de l'opération
         if response.is_operation_success():
-            if response.is_transaction_success():
-                # Convertir l'objet transaction en dictionnaire
-                transaction_data = vars(response.transaction) if response.transaction else {}
-                
-                return jsonify({
-                    "success": True,
-                    "message": response.message,
-                    "status": response.status,
-                    "reference": response.reference,
-                    "transaction": transaction_data,  # Renvoie la transaction sous forme de dictionnaire
-                }), 200
-            else:
-                return jsonify({
-                    "success": False,
-                    "message": response.message,
-                    "status": response.status
-                }), 400
+            return jsonify(serialize({
+                "success": response.is_transaction_success(),
+                "message": response.message,
+                "status": response.status,
+                "reference": response.reference,
+                "transaction": response.transaction
+            })), 200 if response.is_transaction_success() else 400
         else:
-            return jsonify({
+            return jsonify(serialize({
                 "success": False,
                 "message": response.message,
                 "status": response.status
-            }), 400
+            })), 400
 
     except Exception as e:
         print(f"[ERREUR PAY] {e}")
         return jsonify({"error": "Erreur interne", "details": str(e)}), 500
 
-
 @app.route("/api/deposit", methods=["POST"])
 def deposit():
-    """
-    Effectue un dépôt en utilisant la bibliothèque PyMeSomb.
-    """
     try:
         data = request.get_json()
         print("Données reçues :", data)
@@ -177,46 +165,34 @@ def deposit():
         )
 
         if response.is_operation_success():
-            if response.is_transaction_success():
-                transaction_data = vars(response.transaction) if response.transaction else {}
-                return jsonify({
-                    "success": True,
-                    "message": response.message,
-                    "status": response.status,
-                    "reference": response.reference,
-                    "transaction": transaction_data
-                }), 200
-            else:
-                return jsonify({
-                    "success": False,
-                    "message": response.message,
-                    "status": response.status
-                }), 400
+            return jsonify(serialize({
+                "success": response.is_transaction_success(),
+                "message": response.message,
+                "status": response.status,
+                "reference": response.reference,
+                "transaction": response.transaction
+            })), 200 if response.is_transaction_success() else 400
         else:
-            return jsonify({
+            return jsonify(serialize({
                 "success": False,
                 "message": response.message,
                 "status": response.status
-            }), 400
+            })), 400
 
     except Exception as e:
         print(f"[ERREUR DEPOSIT] {e}")
         return jsonify({"error": "Erreur interne", "details": str(e)}), 500
 
-
 @app.route("/api/transaction/<trx_id>", methods=["GET"])
 def get_transaction(trx_id):
-    """
-    Récupère le statut d'une transaction via MeSomb.
-    """
     try:
         response = operation.get_transaction_status(trx_id)
 
         if response:
-            return jsonify({
+            return jsonify(serialize({
                 "success": True,
                 "transaction": response
-            }), 200
+            })), 200
         else:
             return jsonify({
                 "success": False,
@@ -226,7 +202,6 @@ def get_transaction(trx_id):
     except Exception as e:
         print(f"[ERREUR TRANSACTION] {e}")
         return jsonify({"error": "Erreur interne", "details": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
