@@ -57,7 +57,6 @@ def payment_options():
         print(f"[ERREUR OPTIONS] {e}")
         return jsonify({"error": "Erreur interne", "details": str(e)}), 500
 
-
 @app.route("/api/pay", methods=["POST"])
 def pay():
     """
@@ -67,24 +66,30 @@ def pay():
         data = request.get_json()
         print("Données reçues :", data)
 
+        # Extraire les paramètres nécessaires
         method = data.get("method")
         amount = data.get("amount")
         phone = data.get("phone")
         country_code = data.get("country_code")
         trx_id = data.get("trx_id", RandomGenerator.nonce())
 
+        # Vérifier que tous les paramètres sont disponibles
         if not all([method, amount, phone, country_code]):
             return jsonify({"error": "Paramètres manquants"}), 400
 
+        # Vérifier si le pays est supporté
         config = COUNTRY_CONFIG.get(country_code.upper())
         if not config:
             return jsonify({"error": "Pays non supporté"}), 400
 
+        # Vérifier si la méthode de paiement est valide
         if method.upper() not in config["payment_methods"]:
             return jsonify({"error": f"Méthode de paiement '{method}' non disponible pour {country_code.upper()}"}), 400
 
+        # Formater le numéro de téléphone
         formatted_phone = config["phone_format"](phone)
 
+        # Préparer les données pour la collecte
         collect_data = {
             "amount": amount,
             "service": method.upper(),
@@ -95,6 +100,7 @@ def pay():
 
         print("Données de collecte :", collect_data)
 
+        # Effectuer la collecte via l'API MeSomb
         response = operation.make_collect(
             amount=collect_data["amount"],
             service=collect_data["service"],
@@ -103,16 +109,18 @@ def pay():
             trx_id=collect_data["trx_id"]
         )
 
+        # Vérifier le succès de l'opération
         if response.is_operation_success():
             if response.is_transaction_success():
+                # Convertir l'objet transaction en dictionnaire
                 transaction_data = vars(response.transaction) if response.transaction else {}
-
+                
                 return jsonify({
                     "success": True,
                     "message": response.message,
                     "status": response.status,
                     "reference": response.reference,
-                    "transaction": transaction_data,
+                    "transaction": transaction_data,  # Renvoie la transaction sous forme de dictionnaire
                 }), 200
             else:
                 return jsonify({
